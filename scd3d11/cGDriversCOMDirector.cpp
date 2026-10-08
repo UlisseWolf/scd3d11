@@ -20,8 +20,14 @@
 #include <cRZCOMDllDirector.h>
 #include "cGDriver.h"
 #include "CpuScheduling.h"
+#include "NativeShadowDiagnostics.h"
+#include "NativeShadowExperiment.h"
+#include "NativeShadowMasks.h"
+#include "NativeShadowRegistry.h"
 #include "ParallelRenderCull.h"
 #include "SimTickBudget.h"
+#include "TerrainShadows.h"
+#include "ThumbnailFocusGuard.h"
 
 namespace nSCD3D11
 {
@@ -45,8 +51,14 @@ namespace nSCD3D11
 		}
 
 		bool PreAppShutdown() {
+			NativeShadowExperiment::Uninstall();
+			TerrainShadows::Uninstall();
+			NativeShadowRegistry::Uninstall();
+			NativeShadowMasks::Uninstall();
+			NativeShadowDiagnostics::Uninstall();
 			ParallelRenderCull::Uninstall();
 			SimTickBudget::Uninstall();
+			ThumbnailFocusGuard::Uninstall();
 			return true;
 		}
 
@@ -54,6 +66,11 @@ namespace nSCD3D11
 			unsigned const logicalProcessors = CpuScheduling::Apply();
 			ParallelRenderCull::Install(logicalProcessors);
 			SimTickBudget::Install();
+			NativeShadowMasks::Install();
+			NativeShadowRegistry::Install();
+			TerrainShadows::Install();
+			NativeShadowDiagnostics::Install();
+			NativeShadowExperiment::Install();
 			cIGZFrameWork* const pFramework = RZGetFrameWork();
 			if (pFramework) {
 				if (pFramework->GetState() < cIGZFrameWork::kStatePreAppInit) {

@@ -209,9 +209,137 @@ namespace nSCD3D11 {
 			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
 			float encodedFarPlane = 0.0f;
 		} sceneDepth;
+		struct LiveShadowDraw {
+			std::vector<D3D11Vertex> vertices;
+			std::vector<uint32_t> indices;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> texture;
+			Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
+			float modelView[16]{};
+			float projection[16]{};
+			float textureMatrix[16]{};
+			uint32_t alphaFunction = 7;
+			float alphaReference = 0.0f;
+			bool alphaTest = false;
+			// True when captured inside the bracketed prebuilt-network Draw, as
+			// opposed to a signature-matched prop draw. Used only for diagnostics.
+			bool network = false;
+			D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+			// -NativeShadowMasks:replace keeps these across passes in world space:
+			// the model-to-world transform the capture's pass implied, the world
+			// box of the geometry, the box its shadow can reach, a coarse identity
+			// and the pass that last drew it.
+			float modelToWorld[16]{};
+			float worldLow[3]{};
+			float worldHigh[3]{};
+			float shadowLow[3]{};
+			float shadowHigh[3]{};
+			uint64_t shape = 0;
+			uint64_t seenPass = 0;
+		};
+		struct LiveShadowPipeline {
+			Microsoft::WRL::ComPtr<ID3D11VertexShader> casterVS;
+			Microsoft::WRL::ComPtr<ID3D11PixelShader> casterPS;
+			Microsoft::WRL::ComPtr<ID3D11VertexShader> compositeVS;
+			Microsoft::WRL::ComPtr<ID3D11PixelShader> compositePS;
+			Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> vertices;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> indices;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> constants;
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> map;
+			Microsoft::WRL::ComPtr<ID3D11DepthStencilView> mapDepth;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> mapView;
+			Microsoft::WRL::ComPtr<ID3D11SamplerState> mapSampler;
+			Microsoft::WRL::ComPtr<ID3D11DepthStencilState> casterDepth;
+			Microsoft::WRL::ComPtr<ID3D11DepthStencilState> compositeDepth;
+			Microsoft::WRL::ComPtr<ID3D11BlendState> shadowBlend;
+			Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer;
+			uint32_t vertexCapacity = 0;
+			uint32_t indexCapacity = 0;
+			// NativeShadowRegistry casters: world positions only, alpha-tested
+			// through SC4's own projector and prerendered texture.
+			Microsoft::WRL::ComPtr<ID3D11VertexShader> registryVS;
+			Microsoft::WRL::ComPtr<ID3D11PixelShader> registryPS;
+			Microsoft::WRL::ComPtr<ID3D11InputLayout> registryLayout;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> registryVertices;
+			Microsoft::WRL::ComPtr<ID3D11Buffer> registryIndices;
+			Microsoft::WRL::ComPtr<ID3D11SamplerState> clampSampler;
+			Microsoft::WRL::ComPtr<ID3D11SamplerState> wrapSampler;
+			uint32_t registryVertexCapacity = 0;
+			uint32_t registryIndexCapacity = 0;
+			// TerrainShadows' ceiling map, uploaded whenever its generation moves.
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> terrainMap;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> terrainMapView;
+			uint32_t terrainMapWidth = 0;
+			uint32_t terrainMapHeight = 0;
+			uint64_t terrainMapGeneration = 0;
+			// The height field it was built from, one texel per vertex: altitude,
+			// normal x and z, cell flipped. The composite rebuilds the drawn
+			// triangles and SC4's lighting normals from it.
+			Microsoft::WRL::ComPtr<ID3D11Texture2D> terrainAltitude;
+			Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> terrainAltitudeView;
+			uint32_t terrainAltitudeWidth = 0;
+			uint32_t terrainAltitudeHeight = 0;
+		} liveShadows;
+		std::vector<LiveShadowDraw> liveShadowDraws;
+		// -NativeShadowMasks:replace: every per-draw caster seen since the last
+		// full static pass, in world space, so a partial pass also knows the
+		// ones it did not redraw. Valid once a full pass with a known view built it.
+		std::vector<LiveShadowDraw> liveShadowWorldCasters;
+		bool liveShadowWorldCastersValid = false;
+		uint64_t liveShadowPassSerial = 0;
+		// The model-view of the first terrain draw of a static pass. Terrain
+		// vertices are world coordinates, so it is the pass's view, and unlike
+		// DrawShadows' matrix it exists even where there is no overlay to draw.
+		// Only trusted once it has matched DrawShadows' view in some pass, or
+		// for a pass whose first terrain vertex lies on the city's height field.
+		float liveShadowTerrainView[16]{};
+		float liveShadowTerrainVertex[3]{};
+		bool liveShadowTerrainViewValid = false;
+		bool liveShadowTerrainViewTrusted = false;
+		bool liveShadowTerrainViewRejected = false;
+		// The world-space sun of the last pass that reported it. It only changes
+		// with the camera's rotation, which rebuilds the view anyway.
+		float liveShadowSunWorld[3]{};
+		bool liveShadowSunWorldValid = false;
+		void NoteLiveShadowTerrainView(void);
+		// Diagnostic counters for MatchesLiveShadowMesh: calls vs positive
+		// matches. Reported in the -LiveShadowDiag frame summary.
+		uint64_t liveShadowMatchCalls = 0;
+		uint64_t liveShadowMatchHits = 0;
+		// Set when a scissored (partial) static pass ran while shadows were live,
+		// so the next cSC43DRender::Draw can rebuild the backing store cleanly.
+		bool liveShadowCleanRedrawPending = false;
+		// A partial pass only ever sees the casters drawn inside its own
+		// rectangle, so once a per-draw caster has cast a shadow the partial path
+		// can no longer be trusted. Registry casters do not count: every pass
+		// gets all of the ones SC4 would have drawn there.
+		bool liveShadowEverCaptured = false;
+		unsigned liveShadowPartialPasses = 0;
+		// The last orthographic projection a draw used, for passes that have
+		// only registry casters and so no captured draw to take it from.
+		float liveShadowSceneProjection[16]{};
+		bool liveShadowSceneProjectionValid = false;
+		// Colour and strength of the last pass that had SC4's shadow parameters.
+		float liveShadowColour[3]{};
+		float liveShadowStrength = 0.0f;
+		bool liveShadowToneValid = false;
 		// Effects rendered into the persistent back buffer and not yet overwritten by a full clear.
 		bool reshadeEffectsInBackBuffer = false;
 		bool reshadeEffectsThisFrame = false;
+		// Projection parameters published to ReShade effects as the sc4_* uniforms, so a
+		// screen-space shadow effect does not have to be hand-calibrated per zoom level.
+		// Both values come from the last orthographic projection used by a scene draw. Deriving the
+		// sun direction from render state would be more direct, but SC4 bakes its lighting into vertex
+		// colours and never enables fixed-function lighting for the city view.
+		struct ShadowUniforms {
+			// Multiplier turning linear buffer depth into world units, so effect thresholds are
+			// expressed in metres and stay valid at every zoom level.
+			float depthScale = 1.0f;
+			// World units spanned by the viewport's height, which is what makes a ray march
+			// expressed as a slope independent of zoom.
+			float worldPerScreenHeight = 1.0f;
+			bool valid = false;
+		} shadowUniforms;
 		// Plain (non-depth-stencil-bound) copy of the depth buffer; partial CopySubresourceRegion
 		// is illegal on D3D11_BIND_DEPTH_STENCIL resources, so depth region blits bounce through this.
 		Microsoft::WRL::ComPtr<ID3D11Texture2D> depthRegionScratch;
@@ -467,11 +595,35 @@ namespace nSCD3D11 {
 
 		HRESULT UpdateSceneDepth(void);
 
+		void CaptureShadowUniforms(void);
+		bool MatchesLiveShadowMesh(uint32_t firstVertex, uint32_t vertexCount);
+		void CaptureLiveShadowDraw(
+			uint32_t firstVertex, uint32_t vertexCount, std::vector<uint32_t> const &indices,
+			D3D11_PRIMITIVE_TOPOLOGY topology);
+		// Shared tail of every capture path: snapshots the texture (which may be
+		// null for untextured casters), sampler, matrices and alpha state.
+		void AppendLiveShadowDraw(
+			std::vector<D3D11Vertex> vertices, std::vector<uint32_t> indices,
+			D3D11_PRIMITIVE_TOPOLOGY topology, bool networkCaster);
+		// Folds this static pass's per-draw captures into liveShadowWorldCasters.
+		// False when a partial pass has no valid set to fold them into.
+		bool TrackLiveShadowWorldCasters(
+			float const *eyeToWorld, float const *worldToView, float const *projection, float const sun[3],
+			bool sunKnown, bool partialPass);
+
 		void FinishReShadeFrame(void);
 
 	public:
 		// Called at the end of cSC43DRender::Draw: the city view is complete and no UI is drawn yet.
 		void RenderSceneEffects(void);
+		// Called immediately after SC4's static-view pass (staticPass) so the shadow
+		// becomes part of the backing store, and again at scene end for any dynamic
+		// casters.
+		void RenderLivePropShadows(bool staticPass);
+		// True once, for each partial static pass that ran while shadows were
+		// live. The caller invalidates SC4's backing store so the next draw is a
+		// clean full redraw.
+		bool ConsumeLiveShadowCleanRedraw(void);
 
 		cGDriver();
 
