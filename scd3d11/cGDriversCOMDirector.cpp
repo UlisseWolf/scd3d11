@@ -19,13 +19,10 @@
 #include <cIGZFrameWork.h>
 #include <cRZCOMDllDirector.h>
 #include "cGDriver.h"
-#include "CpuScheduling.h"
 #include "NativeShadowDiagnostics.h"
 #include "NativeShadowExperiment.h"
 #include "NativeShadowMasks.h"
 #include "NativeShadowRegistry.h"
-#include "ParallelRenderCull.h"
-#include "SimTickBudget.h"
 #include "TerrainShadows.h"
 #include "ThumbnailFocusGuard.h"
 
@@ -56,16 +53,11 @@ namespace nSCD3D11
 			NativeShadowRegistry::Uninstall();
 			NativeShadowMasks::Uninstall();
 			NativeShadowDiagnostics::Uninstall();
-			ParallelRenderCull::Uninstall();
-			SimTickBudget::Uninstall();
 			ThumbnailFocusGuard::Uninstall();
 			return true;
 		}
 
 		bool OnStart(cIGZCOM* pCOM) {
-			unsigned const logicalProcessors = CpuScheduling::Apply();
-			ParallelRenderCull::Install(logicalProcessors);
-			SimTickBudget::Install();
 			NativeShadowMasks::Install();
 			NativeShadowRegistry::Install();
 			TerrainShadows::Install();

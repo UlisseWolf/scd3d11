@@ -109,16 +109,17 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			// store at the new view. With -NativeShadowMasks:replace the strips are
 			// correct as drawn - every caster that can reach them is known in world
 			// space - so translated updates keep SC4's fast path.
+			// A dirty-rectangle update that ran last draw cannot have produced
+			// correct shadows, whether or not the view also moved, so it asks for
+			// the same clean rebuild a translation does. The registry can request
+			// it without NativeShadowMasks installed, so it is consumed every draw.
+			bool const partialShadowPass = gDriver != nullptr && gDriver->ConsumeLiveShadowCleanRedraw();
+			if (self != nullptr && partialShadowPass) static_cast<uint8_t *>(self)[0x65] = 0;
 			if (self != nullptr && NativeShadowMasks::RequiresCleanTranslatedRedraw()) {
 				auto *const bytes = static_cast<uint8_t *>(self);
 				uint32_t const horizontal = *reinterpret_cast<uint32_t const *>(bytes + 0xE0);
 				uint32_t const vertical = *reinterpret_cast<uint32_t const *>(bytes + 0xE4);
 				bool translated = (horizontal != 0 || vertical != 0) && !NativeShadowRegistry::Enabled();
-				// A dirty-rectangle update that ran last draw cannot have
-				// produced correct shadows, whether or not the view also moved,
-				// so it asks for the same clean rebuild a translation does.
-				bool const partialShadowPass =
-					gDriver != nullptr && gDriver->ConsumeLiveShadowCleanRedraw();
 
 				// cSC43DRender+0x8c owns cSC4CameraControl. Its current zoom and
 				// rotation are the integers at +0x108/+0x10c, written by
@@ -142,7 +143,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 					haveCameraState = true;
 				}
 
-				if (translated || cameraChanged || partialShadowPass) {
+				if (translated || cameraChanged) {
 					bytes[0x65] = 0; // cSC43DRender::mbBackingStoreValid
 					static bool loggedTranslationInvalidation = false, loggedCameraInvalidation = false;
 					if (translated && !loggedTranslationInvalidation) {
@@ -227,9 +228,21 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			gDepthBound = true;
 		}
 
+		// The hooks install whether or not ReShade is loaded, so they must not
+		// read SC4 addresses in a host whose image does not reach them.
+		bool InImage(void const *module, uintptr_t virtualAddress, size_t size) {
+			auto const *const dos = static_cast<IMAGE_DOS_HEADER const *>(module);
+			auto const *const nt = reinterpret_cast<IMAGE_NT_HEADERS const *>(
+				static_cast<uint8_t const *>(module) + dos->e_lfanew);
+			return virtualAddress >= kImageBase &&
+			       virtualAddress - kImageBase + size <= nt->OptionalHeader.SizeOfImage;
+		}
+
 		bool PatchDrawSlot(void *replacement, void *expected) {
+			void *const module = GetModuleHandleW(nullptr);
+			if (!InImage(module, kDrawSlotVA, sizeof(void *))) return false;
 			auto *const slot = reinterpret_cast<void **>(
-				reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + (kDrawSlotVA - kImageBase));
+				reinterpret_cast<uintptr_t>(module) + (kDrawSlotVA - kImageBase));
 			DWORD protection = 0;
 			if (*slot != expected || !VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protection)) return false;
 			*slot = replacement;
@@ -241,6 +254,7 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 #if defined(_MSC_VER) && defined(_M_IX86)
 			auto *const target = static_cast<uint8_t *>(module) + (kDrawPostStaticViewVA - kImageBase);
 			uint8_t const expected[]{0x56, 0x57, 0x8B, 0xF9, 0x8B, 0x87, 0x1C, 0x01, 0x00, 0x00};
+			if (!InImage(module, kDrawPostStaticViewVA, sizeof(expected))) return false;
 			if (std::memcmp(target, expected, sizeof(expected)) != 0) return false;
 			uint8_t replacement[sizeof(expected)]{};
 			std::memset(replacement, 0x90, sizeof(replacement));

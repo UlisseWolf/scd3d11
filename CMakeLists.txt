@@ -59,13 +59,10 @@ set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver_Geometry.cpp
         scd3d11/cGDriver_LiveShadows.cpp
         scd3d11/cGDriversCOMDirector.cpp
-        scd3d11/CpuScheduling.cpp
         scd3d11/NativeShadowDiagnostics.cpp
         scd3d11/NativeShadowMasks.cpp
         scd3d11/NativeShadowRegistry.cpp
         scd3d11/NativeShadowExperiment.cpp
-        scd3d11/ParallelRenderCull.cpp
-        scd3d11/SimTickBudget.cpp
         scd3d11/TerrainShadowMap.cpp
         scd3d11/TerrainShadows.cpp
         scd3d11/ThumbnailFocusGuard.cpp
@@ -177,11 +174,6 @@ if (BUILD_TESTING)
     scd3d11_add_test(SCD3D11ServiceTest
             tests/SCD3D11ServiceTest.cpp
             scd3d11/SCD3D11Service.cpp
-            scd3d11/Diagnostics.cpp)
-
-    scd3d11_add_test(CpuSchedulingTest
-            tests/CpuSchedulingTest.cpp
-            scd3d11/CpuScheduling.cpp
             scd3d11/Diagnostics.cpp)
 
     # Drives a real cGDriver on a hidden window. Built from source instead of reusing the DLL objects:
