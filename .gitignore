@@ -17,3 +17,4 @@ docs/
 .mcp.json
 .claude
 cmake-build-minsizerel/
+SC4D3D11.log

@@ -10,6 +10,7 @@
 
 #include "cGDriver.h"
 #include "Diagnostics.h"
+#include "NativeShadowMasks.h"
 #include "VertexFormatUtils.h"
 
 #include <cstddef>
@@ -643,6 +644,11 @@ float4 PSMain(PSInput input) : SV_TARGET
 			memcpy(constants.lightDiffuse, lightDiffuse, sizeof(constants.lightDiffuse));
 			memcpy(constants.lightSpecular, lightSpecular, sizeof(constants.lightSpecular));
 			memcpy(constants.lightPosition, lightPosition, sizeof(constants.lightPosition));
+			// Snapshot the projection for the ReShade shadow uniforms. Not gated on lighting: SC4 bakes
+			// its lighting into vertex colours and leaves fixed-function lighting off for the city view,
+			// so waiting for a lit draw would never capture anything. RenderSceneEffects runs at the end
+			// of cSC43DRender::Draw, before any UI, so the last projection seen here is the scene's.
+			CaptureShadowUniforms();
 			memcpy(constants.materialAmbient, materialAmbient, sizeof(constants.materialAmbient));
 			memcpy(constants.materialDiffuse, materialDiffuse, sizeof(constants.materialDiffuse));
 			memcpy(constants.materialSpecular, materialSpecular, sizeof(constants.materialSpecular));
@@ -792,7 +798,29 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return;
 		}
 
-		if (D3D11Topology(primitive) != D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
+		uint32_t const firstVertex = static_cast<uint32_t>(first);
+		uint32_t const vertexCount = static_cast<uint32_t>(count);
+		D3D11_PRIMITIVE_TOPOLOGY const topology = D3D11Topology(primitive);
+		if (topology != D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED) {
+			// Live shadows previously only watched DrawElements, so any
+			// non-indexed caster (flat network quads are the classic case)
+			// never reached the shadow map.
+			if (MatchesLiveShadowMesh(firstVertex, vertexCount)) {
+				if (NativeShadowMasks::LiveNetworkDrawActive()) {
+					static bool loggedBracketArrays = false;
+					if (!loggedBracketArrays) {
+						loggedBracketArrays = true;
+						Log(LogCategory::Initialization,
+						    "live bracket draw via DrawArrays (count=%u)", vertexCount);
+					}
+				}
+				try {
+					std::vector<uint32_t> liveIndices(vertexCount);
+					for (uint32_t index = 0; index < vertexCount; ++index) liveIndices[index] = index;
+					CaptureLiveShadowDraw(firstVertex, vertexCount, liveIndices, topology);
+				} catch (std::bad_alloc const &) {
+				}
+			}
 			if (BindGeometryPipeline(primitive)) {
 				d3dContext->Draw(static_cast<UINT>(count), 0);
 			}
@@ -804,6 +832,21 @@ float4 PSMain(PSInput input) : SV_TARGET
 			built = BuildSequentialIndices(primitive, static_cast<uint32_t>(count), drawIndexScratch);
 		} catch (std::bad_alloc const &) {
 		}
+		if (built && MatchesLiveShadowMesh(firstVertex, vertexCount)) {
+			if (NativeShadowMasks::LiveNetworkDrawActive()) {
+				static bool loggedBracketArraysConverted = false;
+				if (!loggedBracketArraysConverted) {
+					loggedBracketArraysConverted = true;
+					Log(LogCategory::Initialization,
+					    "live bracket draw via DrawArrays-converted (count=%u)", vertexCount);
+				}
+			}
+			try {
+				CaptureLiveShadowDraw(firstVertex, vertexCount, drawIndexScratch,
+				                      D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			} catch (std::bad_alloc const &) {
+			}
+		}
 		if (!built || !UploadIndices(drawIndexScratch) || !BindGeometryPipeline(0)) {
 			Log(LogCategory::Unsupported, "unsupported array primitive %u with %d vertices", primitive, count);
 			return;
@@ -814,7 +857,8 @@ float4 PSMain(PSInput input) : SV_TARGET
 	}
 
 	void cGDriver::DrawElements(uint32_t primitive, int32_t count, uint32_t type, void const *indices) {
-		if (count <= 0 || indices == nullptr || (type != 3 && type != 5)) {
+		if (count == 0) return;
+		if (count < 0 || indices == nullptr || (type != 3 && type != 5)) {
 			Log(LogCategory::Unsupported, "invalid indexed draw type %u count %d pointer %p", type, count, indices);
 			return;
 		}
@@ -848,6 +892,32 @@ float4 PSMain(PSInput input) : SV_TARGET
 			return;
 		}
 		INT const baseVertex = -static_cast<INT>(minimumIndex);
+		if (MatchesLiveShadowMesh(minimumIndex, maximumIndex - minimumIndex + 1)) {
+			if (NativeShadowMasks::LiveNetworkDrawActive()) {
+				static bool loggedBracketElements = false;
+				if (!loggedBracketElements) {
+					loggedBracketElements = true;
+					Log(LogCategory::Initialization,
+					    "live bracket draw via DrawElements (range=%u indices=%d)",
+					    maximumIndex - minimumIndex + 1, count);
+				}
+			}
+			std::vector<uint32_t> liveIndices;
+			try {
+				if (convertPrimitive) liveIndices = drawIndexScratch;
+				else if (type == 3) {
+					auto const *source = static_cast<uint16_t const *>(indices);
+					liveIndices.assign(source, source + count);
+				} else {
+					auto const *source = static_cast<uint32_t const *>(indices);
+					liveIndices.assign(source, source + count);
+				}
+				for (uint32_t &index: liveIndices) index -= minimumIndex;
+				CaptureLiveShadowDraw(minimumIndex, maximumIndex - minimumIndex + 1, liveIndices,
+				                      convertPrimitive ? D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST : topology);
+			} catch (std::bad_alloc const &) {
+			}
+		}
 
 		if (!convertPrimitive) {
 			DXGI_FORMAT const indexFormat = type == 3 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;

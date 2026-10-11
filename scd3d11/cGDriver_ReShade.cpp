@@ -28,11 +28,15 @@
 
 #include "cGDriver.h"
 #include "Diagnostics.h"
+#include "NativeShadowMasks.h"
+#include "NativeShadowRegistry.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <d3dcompiler.h>
 #include <reshade.hpp>
+#include <vector>
 
 namespace nSCD3D11 {
 	namespace {
@@ -40,6 +44,10 @@ namespace nSCD3D11 {
 		// The cSC43DRender vtable slot for cSC43DRender::Draw, its only reference (SimCity 4 1.1.641).
 		constexpr uintptr_t kDrawSlotVA = 0x00ABABB4;
 		constexpr uintptr_t kDrawVA = 0x007CB530;
+		// DrawPostStaticView is called after every static-view submission, including
+		// dirty-rectangle updates, and before SC4 saves that image to its backing store.
+		constexpr uintptr_t kDrawPostStaticViewVA = 0x007C3ED0;
+		constexpr uintptr_t kDrawPostStaticViewRejoinVA = 0x007C3EDA;
 
 		char const kShaderSource[] = R"(
 float4 VSMain(uint id : SV_VertexID) : SV_POSITION {
@@ -60,21 +68,117 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		using DrawFunction = bool(__fastcall *)(void *self, void *edx);
 
 		DrawFunction gOriginalDraw = nullptr;
+		uintptr_t gDrawPostStaticViewRejoin = 0;
 		cGDriver *gDriver = nullptr;
 		reshade::api::effect_runtime *gRuntime = nullptr;
 		ID3D11ShaderResourceView *gSceneDepthView = nullptr;
 		bool gDepthBound = false;
 		float gFarPlane = 1000.0f; // ReShade.fxh's default
 
+		// Uniforms carrying a "source" annotation are never written by ReShade itself, so an add-on
+		// owns them. Handles are resolved once per effect reload rather than per frame.
+		struct ShadowUniformBindings {
+			std::vector<reshade::api::effect_uniform_variable> valid;
+			std::vector<reshade::api::effect_uniform_variable> depthScale;
+			std::vector<reshade::api::effect_uniform_variable> worldPerScreen;
+
+			void Clear(void) {
+				valid.clear();
+				depthScale.clear();
+				worldPerScreen.clear();
+			}
+
+			bool Any(void) const {
+				return !valid.empty() || !depthScale.empty() || !worldPerScreen.empty();
+			}
+		};
+
+		ShadowUniformBindings gShadowBindings;
+
 		reshade::api::resource_view ViewHandle(ID3D11View *view) {
 			return reshade::api::resource_view{static_cast<uint64_t>(reinterpret_cast<uintptr_t>(view))};
 		}
 
 		bool __fastcall DrawHook(void *self, void *edx) {
+			// AttemptTranslatedViewUpdate shifts the existing backing-store pixels and
+			// redraws only the newly exposed strips. That dirty region knows the prop's
+			// original footprint, but not LiveShadows' displaced footprint, so baked
+			// shadows otherwise leave trails and get blended repeatedly. Invalidate only
+			// translated updates while native network or prop shadows are enabled; SC4
+			// then takes its own established full-redraw path and builds a clean backing
+			// store at the new view. With -NativeShadowMasks:replace the strips are
+			// correct as drawn - every caster that can reach them is known in world
+			// space - so translated updates keep SC4's fast path.
+			// A dirty-rectangle update that ran last draw cannot have produced
+			// correct shadows, whether or not the view also moved, so it asks for
+			// the same clean rebuild a translation does. The registry can request
+			// it without NativeShadowMasks installed, so it is consumed every draw.
+			bool const partialShadowPass = gDriver != nullptr && gDriver->ConsumeLiveShadowCleanRedraw();
+			if (self != nullptr && partialShadowPass) static_cast<uint8_t *>(self)[0x65] = 0;
+			if (self != nullptr && NativeShadowMasks::RequiresCleanTranslatedRedraw()) {
+				auto *const bytes = static_cast<uint8_t *>(self);
+				uint32_t const horizontal = *reinterpret_cast<uint32_t const *>(bytes + 0xE0);
+				uint32_t const vertical = *reinterpret_cast<uint32_t const *>(bytes + 0xE4);
+				bool translated = (horizontal != 0 || vertical != 0) && !NativeShadowRegistry::Enabled();
+
+				// cSC43DRender+0x8c owns cSC4CameraControl. Its current zoom and
+				// rotation are the integers at +0x108/+0x10c, written by
+				// cSC4CameraControl::SetZoomAndRotation before Draw is entered.
+				// Detect them here, before RestoreBackingStore can reuse pixels made
+				// with the previous projection.
+				static void *lastRender = nullptr;
+				static int32_t lastZoom = 0;
+				static int32_t lastRotation = 0;
+				static bool haveCameraState = false;
+				auto *const camera = *reinterpret_cast<uint8_t **>(bytes + 0x8C);
+				bool cameraChanged = false;
+				if (camera != nullptr) {
+					int32_t const zoom = *reinterpret_cast<int32_t const *>(camera + 0x108);
+					int32_t const rotation = *reinterpret_cast<int32_t const *>(camera + 0x10C);
+					cameraChanged = haveCameraState && lastRender == self &&
+					                (zoom != lastZoom || rotation != lastRotation);
+					lastRender = self;
+					lastZoom = zoom;
+					lastRotation = rotation;
+					haveCameraState = true;
+				}
+
+				if (translated || cameraChanged) {
+					bytes[0x65] = 0; // cSC43DRender::mbBackingStoreValid
+					static bool loggedTranslationInvalidation = false, loggedCameraInvalidation = false;
+					if (translated && !loggedTranslationInvalidation) {
+						loggedTranslationInvalidation = true;
+						Log(LogCategory::Initialization,
+						    "native shadows: translated backing-store updates force a clean static redraw");
+					}
+					if (cameraChanged && !loggedCameraInvalidation) {
+						loggedCameraInvalidation = true;
+						Log(LogCategory::Initialization,
+						    "native shadows: zoom/rotation changes force a clean static redraw");
+					}
+				}
+			}
 			bool const drawn = gOriginalDraw(self, edx);
 			if (drawn && gDriver != nullptr) gDriver->RenderSceneEffects();
 			return drawn;
 		}
+
+#if defined(_MSC_VER) && defined(_M_IX86)
+		__declspec(naked) void __fastcall DrawPostStaticViewOriginal(void *, void *) {
+			__asm {
+				push esi
+				push edi
+				mov  edi, ecx
+				mov  eax, dword ptr [edi + 0x11c]
+				jmp  dword ptr [gDrawPostStaticViewRejoin]
+			}
+		}
+
+		void __fastcall DrawPostStaticViewHook(void *self, void *edx) {
+			DrawPostStaticViewOriginal(self, edx);
+			if (gDriver != nullptr) gDriver->RenderLivePropShadows(true);
+		}
+#endif
 
 		void OnReloadedEffects(reshade::api::effect_runtime *runtime) {
 			char value[32]{};
@@ -82,14 +186,28 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 				                       ? std::strtof(value, nullptr)
 				                       : 1000.0f;
 			gFarPlane = farPlane >= 1.0f ? farPlane : 1000.0f;
+			gShadowBindings.Clear();
 			runtime->enumerate_uniform_variables(nullptr, [](reshade::api::effect_runtime *runtime,
 			                                                 reshade::api::effect_uniform_variable variable) {
 				char source[32]{};
-				if (runtime->get_annotation_string_from_uniform_variable(variable, "source", source) &&
-				    std::strcmp(source, "bufready_depth") == 0) {
-					runtime->set_uniform_value_bool(variable, true);
-				}
+				if (!runtime->get_annotation_string_from_uniform_variable(variable, "source", source)) return;
+				if (std::strcmp(source, "bufready_depth") == 0) runtime->set_uniform_value_bool(variable, true);
+				else if (std::strcmp(source, "sc4_sun_valid") == 0) gShadowBindings.valid.push_back(variable);
+				else if (std::strcmp(source, "sc4_depth_scale") == 0) gShadowBindings.depthScale.push_back(variable);
+				else if (std::strcmp(source, "sc4_world_per_screen_height") == 0) gShadowBindings.worldPerScreen.push_back(variable);
 			});
+		}
+
+		// Pushes the snapshotted projection parameters into every effect that asked for them. Effects that do
+		// not declare the uniforms cost nothing here.
+		void PublishShadowUniforms(reshade::api::effect_runtime *runtime, bool valid, float depthScale,
+		                           float worldPerScreenHeight) {
+			if (!gShadowBindings.Any()) return;
+			for (auto const variable : gShadowBindings.valid) runtime->set_uniform_value_bool(variable, valid);
+			if (!valid) return;
+			for (auto const variable : gShadowBindings.depthScale) runtime->set_uniform_value_float(variable, depthScale);
+			for (auto const variable : gShadowBindings.worldPerScreen)
+				runtime->set_uniform_value_float(variable, worldPerScreenHeight);
 		}
 
 		void OnInitEffectRuntime(reshade::api::effect_runtime *runtime) {
@@ -110,14 +228,52 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			gDepthBound = true;
 		}
 
+		// The hooks install whether or not ReShade is loaded, so they must not
+		// read SC4 addresses in a host whose image does not reach them.
+		bool InImage(void const *module, uintptr_t virtualAddress, size_t size) {
+			auto const *const dos = static_cast<IMAGE_DOS_HEADER const *>(module);
+			auto const *const nt = reinterpret_cast<IMAGE_NT_HEADERS const *>(
+				static_cast<uint8_t const *>(module) + dos->e_lfanew);
+			return virtualAddress >= kImageBase &&
+			       virtualAddress - kImageBase + size <= nt->OptionalHeader.SizeOfImage;
+		}
+
 		bool PatchDrawSlot(void *replacement, void *expected) {
+			void *const module = GetModuleHandleW(nullptr);
+			if (!InImage(module, kDrawSlotVA, sizeof(void *))) return false;
 			auto *const slot = reinterpret_cast<void **>(
-				reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + (kDrawSlotVA - kImageBase));
+				reinterpret_cast<uintptr_t>(module) + (kDrawSlotVA - kImageBase));
 			DWORD protection = 0;
 			if (*slot != expected || !VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protection)) return false;
 			*slot = replacement;
 			VirtualProtect(slot, sizeof(*slot), protection, &protection);
 			return true;
+		}
+
+		bool PatchDrawPostStaticView(void *module) {
+#if defined(_MSC_VER) && defined(_M_IX86)
+			auto *const target = static_cast<uint8_t *>(module) + (kDrawPostStaticViewVA - kImageBase);
+			uint8_t const expected[]{0x56, 0x57, 0x8B, 0xF9, 0x8B, 0x87, 0x1C, 0x01, 0x00, 0x00};
+			if (!InImage(module, kDrawPostStaticViewVA, sizeof(expected))) return false;
+			if (std::memcmp(target, expected, sizeof(expected)) != 0) return false;
+			uint8_t replacement[sizeof(expected)]{};
+			std::memset(replacement, 0x90, sizeof(replacement));
+			replacement[0] = 0xE9;
+			int32_t const displacement = static_cast<int32_t>(
+				reinterpret_cast<uintptr_t>(&DrawPostStaticViewHook) - (reinterpret_cast<uintptr_t>(target) + 5));
+			std::memcpy(replacement + 1, &displacement, sizeof(displacement));
+			gDrawPostStaticViewRejoin = reinterpret_cast<uintptr_t>(target + sizeof(expected));
+			DWORD protection = 0;
+			if (!VirtualProtect(target, sizeof(expected), PAGE_EXECUTE_READWRITE, &protection)) return false;
+			std::memcpy(target, replacement, sizeof(replacement));
+			DWORD ignored = 0;
+			VirtualProtect(target, sizeof(expected), protection, &ignored);
+			FlushInstructionCache(GetCurrentProcess(), target, sizeof(expected));
+			return true;
+#else
+			(void)module;
+			return false;
+#endif
 		}
 	}
 
@@ -128,6 +284,22 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 			return;
 		}
 		attempted = true;
+		void *const executable = GetModuleHandleW(nullptr);
+		auto const draw = reinterpret_cast<void *>(
+			reinterpret_cast<uintptr_t>(executable) + (kDrawVA - kImageBase));
+		if (!PatchDrawSlot(reinterpret_cast<void *>(&DrawHook), draw)) {
+			Log(LogCategory::Initialization, "scene effects: cSC43DRender::Draw not found");
+			return;
+		}
+		gOriginalDraw = reinterpret_cast<DrawFunction>(draw);
+		gDriver = this;
+		if (!PatchDrawPostStaticView(executable)) {
+			Log(LogCategory::Initialization,
+			    "live shadows: DrawPostStaticView byte guard failed; using end-of-scene fallback");
+		} else {
+			Log(LogCategory::Initialization,
+			    "live shadows: static pass hooked before SC4 backing-store save");
+		}
 		if (std::strstr(GetCommandLineA(), "-ReShade:off") != nullptr) return;
 
 		HMODULE module = nullptr;
@@ -136,16 +308,6 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		    !reshade::register_addon(module)) {
 			return; // ReShade is not loaded, or is older than 6.0
 		}
-
-		auto const draw = reinterpret_cast<void *>(
-			reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + (kDrawVA - kImageBase));
-		if (!PatchDrawSlot(reinterpret_cast<void *>(&DrawHook), draw)) {
-			Log(LogCategory::Initialization, "reshade: cSC43DRender::Draw not found, using ReShade's default rendering");
-			reshade::unregister_addon(module);
-			return;
-		}
-		gOriginalDraw = reinterpret_cast<DrawFunction>(draw);
-		gDriver = this;
 
 		reshade::register_event<reshade::addon_event::init_effect_runtime>(&OnInitEffectRuntime);
 		reshade::register_event<reshade::addon_event::destroy_effect_runtime>(&OnDestroyEffectRuntime);
@@ -251,10 +413,55 @@ float PSMain(float4 position : SV_POSITION) : SV_TARGET {
 		return S_OK;
 	}
 
+	// Derives world-space depth and screen scales from the orthographic projection used by the last
+	// scene draw. The shadow effect still supplies the sun direction and slope, but these scales keep
+	// that slope and all depth thresholds stable across zoom levels.
+	void cGDriver::CaptureShadowUniforms(void) {
+		// OpenGL column-major, m[column * 4 + row]. For SC4's orthographic projection
+		// p[5] = 2 / (top - bottom) and p[10] = -2 / (far - near).
+		float const *const p = matrices[PROJECTION];
+
+		// A perspective matrix has a non-zero w row; anything degenerate is not a usable ortho either.
+		bool const orthographic = p[3] == 0.0f && p[7] == 0.0f && p[11] == 0.0f;
+		if (!orthographic || std::fabs(p[5]) < 1e-12f || std::fabs(p[10]) < 1e-12f) {
+			shadowUniforms.valid = false;
+			return;
+		}
+		std::memcpy(liveShadowSceneProjection, p, sizeof(liveShadowSceneProjection));
+		liveShadowSceneProjectionValid = true;
+
+		// SC4 supplies a GL-convention projection (z in -1..1) which the vertex shader remaps to D3D's
+		// 0..1 with (z + w) * 0.5, so the 0..1 depth range spans (far - near) = 2 / |p[10]| world units.
+		// Multiplying buffer depth by that returns world units, which lets an effect express its
+		// thresholds in metres and keeps them valid at every zoom level.
+		shadowUniforms.depthScale = 2.0f / std::fabs(p[10]);
+
+		// World units spanned by the viewport height. A ray march expressed as a slope (rise over run)
+		// can then be converted to world units without knowing the zoom.
+		shadowUniforms.worldPerScreenHeight = 2.0f / std::fabs(p[5]);
+		shadowUniforms.valid = true;
+	}
+
 	void cGDriver::RenderSceneEffects(void) {
+		RenderLivePropShadows(false);
 		if (gRuntime == nullptr || !IsDeviceReady()) return;
 
 		gSceneDepthView = SUCCEEDED(UpdateSceneDepth()) ? sceneDepth.view.Get() : nullptr;
+		PublishShadowUniforms(gRuntime, shadowUniforms.valid, shadowUniforms.depthScale,
+		                      shadowUniforms.worldPerScreenHeight);
+		static bool loggedValid = false;
+		static bool loggedInvalid = false;
+		if (shadowUniforms.valid && !loggedValid) {
+			loggedValid = true;
+			Log(LogCategory::Initialization,
+			    "reshade: shadow uniforms published (depth scale %.4f, world per screen height %.4f, %u bindings)",
+			    shadowUniforms.depthScale, shadowUniforms.worldPerScreenHeight,
+			    static_cast<unsigned>(gShadowBindings.depthScale.size() + gShadowBindings.worldPerScreen.size()));
+		} else if (!shadowUniforms.valid && !loggedInvalid) {
+			loggedInvalid = true;
+			Log(LogCategory::Initialization,
+			    "reshade: no orthographic projection captured yet; shadow uniforms stay unset");
+		}
 		reshade::api::command_list *const commands = gRuntime->get_command_queue()->get_immediate_command_list();
 		gRuntime->render_effects(commands, ViewHandle(renderTargetView.Get()), ViewHandle(renderTargetViewSrgb.Get()));
 		if (gDepthBound) {

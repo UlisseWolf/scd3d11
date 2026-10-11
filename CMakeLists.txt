@@ -57,10 +57,15 @@ target_compile_definitions(scd3d11_common INTERFACE
 set(SCD3D11_DRIVER_SOURCES
         scd3d11/cGDriver.cpp
         scd3d11/cGDriver_Geometry.cpp
+        scd3d11/cGDriver_LiveShadows.cpp
         scd3d11/cGDriversCOMDirector.cpp
-        scd3d11/CpuScheduling.cpp
-        scd3d11/ParallelRenderCull.cpp
-        scd3d11/SimTickBudget.cpp
+        scd3d11/NativeShadowDiagnostics.cpp
+        scd3d11/NativeShadowMasks.cpp
+        scd3d11/NativeShadowRegistry.cpp
+        scd3d11/NativeShadowExperiment.cpp
+        scd3d11/TerrainShadowMap.cpp
+        scd3d11/TerrainShadows.cpp
+        scd3d11/ThumbnailFocusGuard.cpp
         scd3d11/cGDriver_Info.cpp
         scd3d11/cGDriver_Init.cpp
         scd3d11/cGDriver_State.cpp
@@ -137,6 +142,24 @@ if (BUILD_TESTING)
             SC4D3D11_GEOMETRY_SOURCE="${PROJECT_SOURCE_DIR}/scd3d11/cGDriver_ReShade.cpp")
     target_link_libraries(ReShadeShaderCompileTest PRIVATE d3dcompiler)
 
+    scd3d11_add_test(LiveShadowShaderCompileTest tests/D3D11ShaderCompileTest.cpp)
+    target_compile_definitions(LiveShadowShaderCompileTest PRIVATE
+            SC4D3D11_GEOMETRY_SOURCE="${PROJECT_SOURCE_DIR}/scd3d11/cGDriver_LiveShadows.cpp"
+            SC4D3D11_SHADER_VARIABLE="kLiveShadowShader"
+            SC4D3D11_SHADER_ENTRIES="CasterVS=vs_4_0,CasterPS=ps_4_0,FullscreenVS=vs_4_0,CompositePS=ps_4_0,RegistryVS=vs_4_0,RegistryPS=ps_4_0")
+    target_link_libraries(LiveShadowShaderCompileTest PRIVATE d3dcompiler)
+
+    scd3d11_add_test(NativeShadowRegistryTest
+            tests/NativeShadowRegistryTest.cpp
+            scd3d11/NativeShadowRegistry.cpp
+            scd3d11/NativeShadowMasks.cpp
+            scd3d11/Diagnostics.cpp)
+    target_link_libraries(NativeShadowRegistryTest PRIVATE version)
+
+    scd3d11_add_test(TerrainShadowMapTest
+            tests/TerrainShadowMapTest.cpp
+            scd3d11/TerrainShadowMap.cpp)
+
     scd3d11_add_test(D3D11DepthRegionCopyTest tests/D3D11DepthRegionCopyTest.cpp)
     target_link_libraries(D3D11DepthRegionCopyTest PRIVATE d3d11)
 
@@ -151,11 +174,6 @@ if (BUILD_TESTING)
     scd3d11_add_test(SCD3D11ServiceTest
             tests/SCD3D11ServiceTest.cpp
             scd3d11/SCD3D11Service.cpp
-            scd3d11/Diagnostics.cpp)
-
-    scd3d11_add_test(CpuSchedulingTest
-            tests/CpuSchedulingTest.cpp
-            scd3d11/CpuScheduling.cpp
             scd3d11/Diagnostics.cpp)
 
     # Drives a real cGDriver on a hidden window. Built from source instead of reusing the DLL objects:
