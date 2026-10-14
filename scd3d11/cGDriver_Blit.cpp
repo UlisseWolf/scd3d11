@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstring>
 #include <d3dcompiler.h>
+#include <unordered_set>
 
 namespace nSCD3D11 {
 	namespace {
@@ -62,6 +63,60 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			float sourceAlpha;
 			float padding[7];
 		};
+
+		char const *BlitAlphaName(int alpha) {
+			static char const *const names[] = {"opaque", "source", "constant", "source-modulated"};
+			return alpha >= 0 && alpha < 4 ? names[alpha] : "?";
+		}
+
+		// Logs each distinct blit request once (capped), with a census of the source alpha and the colour
+		// key, so UI elements that come out with opaque black or white boxes can be traced to their path.
+		void LogBlitRequest(
+			int32_t destX, int32_t destY, int32_t destWidth, int32_t destHeight, uint32_t width, uint32_t height,
+			uint32_t format, uint32_t type, uint32_t pixelBytes, uint32_t sourcePitch, void const *pixels,
+			bool colorKeyed, uint32_t key, int alpha, uint32_t alphaValue, bool puntSourceAlpha) {
+			static std::unordered_set<uint64_t> seen;
+			if (seen.size() >= 256) return;
+			uint64_t hash = 1469598103934665603ull;
+			uint32_t const fields[] = {
+				static_cast<uint32_t>(destWidth), static_cast<uint32_t>(destHeight), width, height, format, type,
+				colorKeyed ? 1u : 0u, colorKeyed ? key : 0u, static_cast<uint32_t>(alpha), alphaValue,
+				puntSourceAlpha ? 1u : 0u
+			};
+			for (uint32_t field: fields) {
+				hash ^= field;
+				hash *= 1099511628211ull;
+			}
+			if (!seen.insert(hash).second) return;
+
+			// For 4-byte sources, count pixels by their fourth byte and the key match.
+			uint32_t alphaZero = 0, alphaPartial = 0, alphaFull = 0, keyMatches = 0;
+			for (uint32_t y = 0; y < height; ++y) {
+				uint8_t const *row = static_cast<uint8_t const *>(pixels) + static_cast<size_t>(y) * sourcePitch;
+				for (uint32_t x = 0; x < width; ++x, row += pixelBytes) {
+					uint32_t raw = 0;
+					std::memcpy(&raw, row, pixelBytes);
+					if (colorKeyed && (pixelBytes == 4 ? (raw & 0x00ffffffu) == (key & 0x00ffffffu) : raw == key)) {
+						++keyMatches;
+					}
+					if (pixelBytes == 4) {
+						uint8_t const a = row[3];
+						if (a == 0) ++alphaZero;
+						else if (a == 0xff) ++alphaFull;
+						else ++alphaPartial;
+					}
+				}
+			}
+			uint8_t const *first = static_cast<uint8_t const *>(pixels);
+			uint32_t firstPixel = 0;
+			std::memcpy(&firstPixel, first, pixelBytes);
+			Log(LogCategory::Blit,
+			    "dest %d,%d %dx%d source %ux%u format %u type %u bytes/px %u alpha %s value 0x%08X punt-source-alpha %d "
+			    "key %s 0x%08X matches %u | 4th byte zero %u partial %u full %u | first pixel 0x%08X",
+			    destX, destY, destWidth, destHeight, width, height, format, type, pixelBytes, BlitAlphaName(alpha),
+			    alphaValue, puntSourceAlpha ? 1 : 0, colorKeyed ? "on" : "off", key, keyMatches, alphaZero,
+			    alphaPartial, alphaFull, firstPixel);
+		}
 
 		void UnpackColor(uint32_t value, float rgba[4]) {
 			// 0xAARRGGBB; bare byte values only carry alpha, so 0xFFFFFFFF and 0xFF are both "no change".
@@ -236,6 +291,8 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 
 		// Only the source rectangle is uploaded; the texture itself is grow-only.
 		uint32_t const sourcePitch = (pixelStoreRowLength != 0 ? pixelStoreRowLength : width) * pixelBytes;
+		LogBlitRequest(destX, destY, destWidth, destHeight, width, height, format, type, pixelBytes, sourcePitch,
+		               pixels, colorKeyed, key, static_cast<int>(alpha), alphaValue, blitUsesSourceAlpha);
 		D3D11_BOX const box{0, 0, 0, width, height, 1};
 		if (type == 1 && format == 3) {
 			d3dContext->UpdateSubresource(blit.texture.Get(), 0, &box, pixels, sourcePitch, 0);

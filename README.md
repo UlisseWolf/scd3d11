@@ -98,7 +98,7 @@ a city. Requires SimCity 4 1.1.641. Check `SC4D3D11.log` for
 ## Diagnostics
 
 The driver writes `SC4D3D11.log` to the parent of the plugins folder holding `SCD3D11.dll` (normally
-`Documents\SimCity 4`), tagged by category: `init`, `caps`, `swapchain`, `resource`, `grid`, `unsupported`, `window`. The log is
+`Documents\SimCity 4`), tagged by category: `init`, `caps`, `swapchain`, `resource`, `grid`, `unsupported`, `window`, `blit`. The log is
 recreated each session.
 
 `window` records focus, activation, size, visibility and system-command messages on the game window (Alt+Tab and the

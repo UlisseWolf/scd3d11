@@ -29,7 +29,7 @@ namespace nSCD3D11
 		std::unordered_set<uint64_t> observed[static_cast<unsigned int>(ObservedCategory::Count)];
 
 		char const* CategoryName(LogCategory category) {
-			static char const* names[] = { "init", "caps", "swapchain", "resource", "grid", "unsupported", "window" };
+			static char const* names[] = { "init", "caps", "swapchain", "resource", "grid", "unsupported", "window", "blit" };
 			return names[static_cast<unsigned int>(category)];
 		}
 
