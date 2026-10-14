@@ -15,7 +15,7 @@
 #include <vector>
 
 // Replaces SC4's projected BAT shadows (buildings, flora, BAT props, poles) with
-// casters in cGDriver's live shadow map. Opt-in with -NativeShadowMasks:replace,
+// casters in cGDriver's live shadow map. On by default as -NativeShadowMasks:replace,
 // which also turns on every live path NativeShadowMasks:all enables.
 //
 // cSTEOverlayManager::AddShadow already turns each caster mesh into a world-to-UV

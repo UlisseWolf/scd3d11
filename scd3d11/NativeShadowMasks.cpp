@@ -760,7 +760,9 @@ namespace nSCD3D11::NativeShadowMasks {
 		Mode ReadMode() {
 			char const *const commandLine = GetCommandLineA();
 			char const *argument = std::strstr(commandLine, "-NativeShadowMasks:");
-			if (argument == nullptr) return Mode::Off;
+			// On by default as :replace (every live path plus the registry); -NativeShadowMasks:off disables it.
+			// NativeShadowExperiment stays opt-in.
+			if (argument == nullptr) return Mode::All;
 			argument += sizeof("-NativeShadowMasks:") - 1;
 			auto matches = [](char const *value, char const *expected) {
 				size_t const length = std::strlen(expected);

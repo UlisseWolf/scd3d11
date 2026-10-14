@@ -24,7 +24,6 @@ namespace nSCD3D11
 		Grid,
 		Unsupported,
 		Window,
-		Blit,
 		Count
 	};
 

@@ -914,7 +914,8 @@ namespace nSCD3D11::NativeShadowRegistry {
 
 		bool Requested() {
 			char const *argument = std::strstr(GetCommandLineA(), "-NativeShadowMasks:");
-			if (argument == nullptr) return false;
+			// Without the switch native shadows default to :replace, which includes the registry.
+			if (argument == nullptr) return true;
 			argument += sizeof("-NativeShadowMasks:") - 1;
 			return _strnicmp(argument, "replace", 7) == 0 &&
 			       (argument[7] == '\0' || argument[7] == ' ' || argument[7] == '\t');

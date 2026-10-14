@@ -22,9 +22,6 @@
 #include <cstddef>
 #include <cstring>
 #include <d3dcompiler.h>
-#include <string>
-#include <unordered_set>
-#include <vector>
 
 namespace nSCD3D11 {
 	namespace {
@@ -65,131 +62,6 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 			float sourceAlpha;
 			float padding[7];
 		};
-
-		char const *BlitAlphaName(int alpha) {
-			static char const *const names[] = {"opaque", "source", "constant", "source-modulated"};
-			return alpha >= 0 && alpha < 4 ? names[alpha] : "?";
-		}
-
-		// Folder next to SC4D3D11.log (the parent of the plugins folder holding the DLL) for blit dumps.
-		std::wstring BlitDumpFolder() {
-			HMODULE module = nullptr;
-			wchar_t path[MAX_PATH]{};
-			if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-			                        reinterpret_cast<LPCWSTR>(&BlitDumpFolder), &module) ||
-			    GetModuleFileNameW(module, path, MAX_PATH) == 0) {
-				return L"SC4D3D11-blits";
-			}
-			std::wstring folder(path);
-			for (int i = 0; i < 2; ++i) {
-				size_t const slash = folder.find_last_of(L"\\/");
-				if (slash == std::wstring::npos) return L"SC4D3D11-blits";
-				folder.resize(slash);
-			}
-			return folder + L"\\SC4D3D11-blits";
-		}
-
-		// Writes the source rectangle as a 32-bit top-down TGA with its alpha channel, as SC4 handed it over.
-		bool DumpBlitTga(unsigned index, int32_t destX, int32_t destY, uint32_t width, uint32_t height,
-		                 uint32_t format, uint32_t type, uint32_t pixelBytes, uint32_t sourcePitch, void const *pixels,
-		                 char const *mode) {
-			static std::wstring const folder = BlitDumpFolder();
-			static bool const created = CreateDirectoryW(folder.c_str(), nullptr) != 0 ||
-			                            GetLastError() == ERROR_ALREADY_EXISTS;
-			if (!created) return false;
-			wchar_t name[160]{};
-			swprintf_s(name, L"\\%04u_%d_%d_%ux%u_f%u_t%u_%hs.tga", index, destX, destY, width, height, format, type,
-			           mode);
-			FILE *file = nullptr;
-			if (_wfopen_s(&file, (folder + name).c_str(), L"wb") != 0 || file == nullptr) return false;
-			uint8_t header[18]{};
-			header[2] = 2;
-			header[12] = static_cast<uint8_t>(width);
-			header[13] = static_cast<uint8_t>(width >> 8);
-			header[14] = static_cast<uint8_t>(height);
-			header[15] = static_cast<uint8_t>(height >> 8);
-			header[16] = 32;
-			header[17] = 0x28;
-			fwrite(header, 1, sizeof(header), file);
-			std::vector<uint8_t> row(static_cast<size_t>(width) * 4);
-			for (uint32_t y = 0; y < height; ++y) {
-				uint8_t const *source = static_cast<uint8_t const *>(pixels) + static_cast<size_t>(y) * sourcePitch;
-				for (uint32_t x = 0; x < width; ++x, source += pixelBytes) {
-					uint8_t *destination = row.data() + static_cast<size_t>(x) * 4;
-					if (format == 3 && type == 1) {
-						std::memcpy(destination, source, 4);
-						continue;
-					}
-					uint8_t rgba[4]{0, 0, 0, 0xff};
-					ConvertTextureSourcePixel(format, type, source, rgba);
-					destination[0] = rgba[2];
-					destination[1] = rgba[1];
-					destination[2] = rgba[0];
-					destination[3] = rgba[3];
-				}
-				fwrite(row.data(), 1, row.size(), file);
-			}
-			fclose(file);
-			return true;
-		}
-
-		// Logs each distinct blit request once, with a census of the source alpha and the colour key, and dumps
-		// its pixels, so UI elements that come out with opaque black or white boxes can be traced to their path.
-		// The constant alpha is left out of the identity: fades would otherwise use up the whole budget.
-		void LogBlitRequest(
-			int32_t destX, int32_t destY, int32_t destWidth, int32_t destHeight, uint32_t width, uint32_t height,
-			uint32_t format, uint32_t type, uint32_t pixelBytes, uint32_t sourcePitch, void const *pixels,
-			bool colorKeyed, uint32_t key, int alpha, uint32_t alphaValue, bool puntSourceAlpha) {
-			static std::unordered_set<uint64_t> seen;
-			if (seen.size() >= 1500) return;
-			uint64_t hash = 1469598103934665603ull;
-			uint32_t const fields[] = {
-				static_cast<uint32_t>(destX), static_cast<uint32_t>(destY),
-				static_cast<uint32_t>(destWidth), static_cast<uint32_t>(destHeight), width, height, format, type,
-				colorKeyed ? 1u : 0u, colorKeyed ? key : 0u, static_cast<uint32_t>(alpha), puntSourceAlpha ? 1u : 0u
-			};
-			for (uint32_t field: fields) {
-				hash ^= field;
-				hash *= 1099511628211ull;
-			}
-			if (!seen.insert(hash).second) return;
-			unsigned const index = static_cast<unsigned>(seen.size());
-
-			// For 4-byte sources, count pixels by their fourth byte and the key match.
-			uint32_t alphaZero = 0, alphaPartial = 0, alphaFull = 0, keyMatches = 0;
-			for (uint32_t y = 0; y < height; ++y) {
-				uint8_t const *row = static_cast<uint8_t const *>(pixels) + static_cast<size_t>(y) * sourcePitch;
-				for (uint32_t x = 0; x < width; ++x, row += pixelBytes) {
-					uint32_t raw = 0;
-					std::memcpy(&raw, row, pixelBytes);
-					if (colorKeyed && (pixelBytes == 4 ? (raw & 0x00ffffffu) == (key & 0x00ffffffu) : raw == key)) {
-						++keyMatches;
-					}
-					if (pixelBytes == 4) {
-						uint8_t const a = row[3];
-						if (a == 0) ++alphaZero;
-						else if (a == 0xff) ++alphaFull;
-						else ++alphaPartial;
-					}
-				}
-			}
-			uint32_t firstPixel = 0;
-			std::memcpy(&firstPixel, pixels, pixelBytes);
-			char const *const mode = BlitAlphaName(alpha);
-			// Dumps stay small: the UI pieces matter, not full-screen region-view frames.
-			bool dumped = false;
-			if (index <= 600 && static_cast<uint64_t>(width) * height <= 640u * 480u) {
-				dumped = DumpBlitTga(index, destX, destY, width, height, format, type, pixelBytes, sourcePitch, pixels,
-				                     mode);
-			}
-			Log(LogCategory::Blit,
-			    "#%u dest %d,%d %dx%d source %ux%u format %u type %u bytes/px %u alpha %s value 0x%08X "
-			    "punt-source-alpha %d key %s 0x%08X matches %u | 4th byte zero %u partial %u full %u | first pixel "
-			    "0x%08X%s",
-			    index, destX, destY, destWidth, destHeight, width, height, format, type, pixelBytes, mode, alphaValue,
-			    puntSourceAlpha ? 1 : 0, colorKeyed ? "on" : "off", key, keyMatches, alphaZero, alphaPartial,
-			    alphaFull, firstPixel, dumped ? " (dumped)" : "");
-		}
 
 		void UnpackColor(uint32_t value, float rgba[4]) {
 			// 0xAARRGGBB; bare byte values only carry alpha, so 0xFFFFFFFF and 0xFF are both "no change".
@@ -349,7 +221,15 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 		colorKeyed = colorKeyed && colorKey != nullptr;
 		uint32_t key = 0;
 		if (colorKeyed) std::memcpy(&key, colorKey, pixelBytes);
-		bool const usesSourceAlpha = alpha == BlitAlpha::Source || alpha == BlitAlpha::SourceModulated;
+		// SC4 also sends some 32-bit UI icons (the pause button, the panel's hide button) through the keyed
+		// opaque BitBlt with their transparency in the alpha channel rather than in the key colour, which
+		// they never contain. Ignoring that alpha drew their transparent pixels as black and white boxes, so a
+		// keyed blit of a source that carries alpha honours it. Sources without transparency have alpha 255
+		// throughout and look the same either way.
+		bool const keyedSourceWithAlpha =
+			colorKeyed && alpha == BlitAlpha::Opaque && TextureSourceComponents(format) == 4;
+		bool const usesSourceAlpha =
+			alpha == BlitAlpha::Source || alpha == BlitAlpha::SourceModulated || keyedSourceWithAlpha;
 
 		BlitConstants constants{};
 		constants.modulate[0] = constants.modulate[1] = constants.modulate[2] = constants.modulate[3] = 1.0f;
@@ -364,8 +244,6 @@ float4 PSMain(VertexOutput input) : SV_TARGET {
 
 		// Only the source rectangle is uploaded; the texture itself is grow-only.
 		uint32_t const sourcePitch = (pixelStoreRowLength != 0 ? pixelStoreRowLength : width) * pixelBytes;
-		LogBlitRequest(destX, destY, destWidth, destHeight, width, height, format, type, pixelBytes, sourcePitch,
-		               pixels, colorKeyed, key, static_cast<int>(alpha), alphaValue, blitUsesSourceAlpha);
 		D3D11_BOX const box{0, 0, 0, width, height, 1};
 		if (type == 1 && format == 3) {
 			d3dContext->UpdateSubresource(blit.texture.Get(), 0, &box, pixels, sourcePitch, 0);

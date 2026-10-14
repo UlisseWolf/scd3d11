@@ -32,6 +32,7 @@ Added by SCD3D11:
 | `-GPU:default` | high-performance GPU | Use the adapter Windows picks instead of the high-performance one |
 | `-GridDebug` | off | Log the texture state of the terrain grid pass once per second (`grid` category) |
 | `-LogLevel:trace` | off | Also log high-volume events: geometry cache segment recycling, capture changes, window z-order moves |
+| `-NativeShadowMasks:off` | `replace` | Advanced shadows: `replace` (default) enables live shadows for network pieces and props plus the shadow registry and terrain shadows; `all`, `props` or `network` select a subset without the registry; `off` disables them. The experimental `-NativeShadowExperiment` stays off unless requested |
 | `-ReShade:off` | integration on | Leave ReShade at its default behaviour (effects over the whole frame, UI included); see [ReShade](#reshade) |
 
 Standard SimCity 4 switches that SCD3D11 reacts to or that the scripts in `scripts/` use:
@@ -98,7 +99,7 @@ a city. Requires SimCity 4 1.1.641. Check `SC4D3D11.log` for
 ## Diagnostics
 
 The driver writes `SC4D3D11.log` to the parent of the plugins folder holding `SCD3D11.dll` (normally
-`Documents\SimCity 4`), tagged by category: `init`, `caps`, `swapchain`, `resource`, `grid`, `unsupported`, `window`, `blit`. The log is
+`Documents\SimCity 4`), tagged by category: `init`, `caps`, `swapchain`, `resource`, `grid`, `unsupported`, `window`. The log is
 recreated each session.
 
 `window` records focus, activation, size, visibility and system-command messages on the game window (Alt+Tab and the

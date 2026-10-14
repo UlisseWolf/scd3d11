@@ -42,8 +42,9 @@ int main() {
 	assert(!AppendTriangles(6, indices, 3, triangles));
 	assert(triangles.empty());
 
-	// Nothing is installed without -NativeShadowMasks:replace, and an idle
-	// registry reports no pass.
+	// The registry is on by default, but installs only into SimCity 4 1.1.641,
+	// so nothing is installed in this test process and an idle registry
+	// reports no pass.
 	assert(!nSCD3D11::NativeShadowRegistry::Install());
 	assert(!nSCD3D11::NativeShadowRegistry::Enabled());
 	nSCD3D11::NativeShadowRegistry::Pass pass;
