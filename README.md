@@ -32,7 +32,7 @@ Added by SCD3D11:
 | `-GPU:default` | high-performance GPU | Use the adapter Windows picks instead of the high-performance one |
 | `-GridDebug` | off | Log the texture state of the terrain grid pass once per second (`grid` category) |
 | `-LogLevel:trace` | off | Also log high-volume events: geometry cache segment recycling, capture changes, window z-order moves |
-| `-NativeShadowMasks:off` | `replace` | Advanced shadows: `replace` (default) enables live shadows for network pieces and props plus the shadow registry and terrain shadows; `all`, `props` or `network` select a subset without the registry; `off` disables them. The experimental `-NativeShadowExperiment` stays off unless requested |
+| `-NativeShadowMasks:off` | `all` | Live shadows of True3D props and network pieces: `all` (default) casts both, `props` or `network` only one, `off` none. `replace` also turns on the experimental shadow registry and terrain shadows, which can cast blocks of shadow beside dense parks. `-NativeShadowExperiment` stays off unless requested |
 | `-ReShade:off` | integration on | Leave ReShade at its default behaviour (effects over the whole frame, UI included); see [ReShade](#reshade) |
 
 Standard SimCity 4 switches that SCD3D11 reacts to or that the scripts in `scripts/` use:

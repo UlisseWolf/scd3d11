@@ -760,8 +760,9 @@ namespace nSCD3D11::NativeShadowMasks {
 		Mode ReadMode() {
 			char const *const commandLine = GetCommandLineA();
 			char const *argument = std::strstr(commandLine, "-NativeShadowMasks:");
-			// On by default as :replace (every live path plus the registry); -NativeShadowMasks:off disables it.
-			// NativeShadowExperiment stays opt-in.
+			// On by default as :all, the live True3D shadows of props and networks; -NativeShadowMasks:off
+			// disables them. The shadow registry and terrain shadows are experimental: they cast whole blocks
+			// of shadow beside dense parks, so only :replace turns them on. NativeShadowExperiment stays opt-in.
 			if (argument == nullptr) return Mode::All;
 			argument += sizeof("-NativeShadowMasks:") - 1;
 			auto matches = [](char const *value, char const *expected) {
