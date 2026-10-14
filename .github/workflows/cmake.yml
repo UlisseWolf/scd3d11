@@ -36,7 +36,7 @@ jobs:
     - name: Configure
       run: >-
         cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.configuration }}
-        -DSCD3D11_VERSION_TAG=${{ env.VERSION_TAG }}
+        "-DSCD3D11_VERSION_TAG=${{ env.VERSION_TAG }}"
 
     - name: Build
       run: cmake --build build
