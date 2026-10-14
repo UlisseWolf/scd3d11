@@ -24,7 +24,9 @@ namespace nSCD3D11
 	namespace
 	{
 		// Window and swap chain events repeat on every focus change, so they get a larger budget.
-		constexpr unsigned int kMessagesPerCategory[] = { 128, 128, 1024, 128, 128, 128, 1024 };
+		constexpr unsigned int kMessagesPerCategory[] = { 128, 128, 1024, 128, 128, 128, 1024, 2048 };
+		static_assert(sizeof(kMessagesPerCategory) / sizeof(kMessagesPerCategory[0]) ==
+		              static_cast<unsigned int>(LogCategory::Count), "one message limit per log category");
 		std::atomic<unsigned int> messageCounts[static_cast<unsigned int>(LogCategory::Count)]{};
 		std::unordered_set<uint64_t> observed[static_cast<unsigned int>(ObservedCategory::Count)];
 
